@@ -94,31 +94,55 @@ class GapPredictor:
         )
         secondary_context = df_secondary[secondary_mask]
         
-        # Extract features
-        feature_cols = config.OHLCV_FEATURES + config.DERIVED_FEATURES + config.TEMPORAL_FEATURES
+        # Extract features - use only OHLCV + derived (no temporal for model input)
+        feature_cols = config.OHLCV_FEATURES + config.DERIVED_FEATURES
+        available_features = [col for col in feature_cols if col in primary_context.columns]
         
-        primary_features = primary_context[feature_cols].values
-        secondary_features = secondary_context[feature_cols].values
+        primary_features = primary_context[available_features].values
+        secondary_features = secondary_context[available_features].values
         
-        # Pad to required length
-        primary_padded = self._pad_context(primary_features, config.LOOKBACK_WINDOW)
+        # Pad to required length (FIXED LENGTH for model)
+        num_features = len(available_features)
+        primary_padded = self._pad_context(primary_features, config.LOOKBACK_WINDOW, num_features)
+        
+        # Secondary context must be padded to LOOKBACK_WINDOW + MAX_GAP_LENGTH
+        secondary_target_length = config.LOOKBACK_WINDOW + config.MAX_GAP_LENGTH
         secondary_padded = self._pad_context(
             secondary_features, 
-            config.LOOKBACK_WINDOW + gap_length
+            secondary_target_length,
+            num_features
         )
         
         return {
-            'primary_context': primary_padded.reshape(1, -1, primary_padded.shape[-1]),
-            'secondary_context': secondary_padded.reshape(1, -1, secondary_padded.shape[-1]),
+            'primary_context': primary_padded.reshape(1, config.LOOKBACK_WINDOW, num_features),
+            'secondary_context': secondary_padded.reshape(1, secondary_target_length, num_features),
             'gap_length': np.array([[gap_length]])
         }
     
-    def _pad_context(self, data: np.ndarray, target_length: int) -> np.ndarray:
-        """Pad or truncate context to target length."""
+    def _pad_context(self, data: np.ndarray, target_length: int, num_features: int = None) -> np.ndarray:
+        """
+        Pad or truncate context to target length.
+        
+        Args:
+            data: Input array
+            target_length: Target number of timesteps
+            num_features: Number of features (if None, inferred from data)
+            
+        Returns:
+            Padded array of shape (target_length, num_features)
+        """
+        if len(data) == 0:
+            if num_features is None:
+                num_features = len(config.OHLCV_FEATURES) + len(config.DERIVED_FEATURES)
+            return np.zeros((target_length, num_features))
+        
+        if num_features is None:
+            num_features = data.shape[1] if len(data.shape) > 1 else 1
+        
         if len(data) >= target_length:
             return data[-target_length:]
         else:
-            padding = np.zeros((target_length - len(data), data.shape[1]))
+            padding = np.zeros((target_length - len(data), num_features))
             return np.vstack([padding, data])
     
     def predict_gap(self, df_primary: pd.DataFrame,

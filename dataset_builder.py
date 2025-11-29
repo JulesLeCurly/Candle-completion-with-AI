@@ -102,19 +102,43 @@ class DatasetBuilder:
         context_end = gap_start
         primary_context = df_primary.iloc[context_start:context_end]
         
-        # Context from secondary exchange (before + during gap)
-        secondary_context = df_secondary.iloc[context_start:gap_start + gap_length]
+        # Context from secondary exchange (before + during gap, padded to max)
+        secondary_context_end = gap_start + config.MAX_GAP_LENGTH
+        secondary_context = df_secondary.iloc[context_start:secondary_context_end]
         
         # Target: primary exchange data during gap
         target = df_primary.iloc[gap_start:gap_start + gap_length]
         
-        # Extract feature columns
-        feature_cols = config.OHLCV_FEATURES + config.DERIVED_FEATURES + config.TEMPORAL_FEATURES
+        # Extract feature columns - ONLY OHLCV + derived (not temporal)
+        feature_cols = []
+        for col in config.OHLCV_FEATURES + config.DERIVED_FEATURES:
+            if col in df_primary.columns:
+                feature_cols.append(col)
+        
+        # Get values and ensure proper shape
+        primary_values = primary_context[feature_cols].values
+        secondary_values = secondary_context[feature_cols].values
+        target_values = target[config.OHLCV_FEATURES].values
+        
+        # Ensure primary context has correct length
+        if len(primary_values) < config.LOOKBACK_WINDOW:
+            padding = np.zeros((config.LOOKBACK_WINDOW - len(primary_values), len(feature_cols)))
+            primary_values = np.vstack([padding, primary_values])
+        elif len(primary_values) > config.LOOKBACK_WINDOW:
+            primary_values = primary_values[-config.LOOKBACK_WINDOW:]
+        
+        # Ensure secondary context has correct length (FIXED to LOOKBACK + MAX_GAP)
+        expected_secondary_len = config.LOOKBACK_WINDOW + config.MAX_GAP_LENGTH
+        if len(secondary_values) < expected_secondary_len:
+            padding = np.zeros((expected_secondary_len - len(secondary_values), len(feature_cols)))
+            secondary_values = np.vstack([padding, secondary_values])
+        elif len(secondary_values) > expected_secondary_len:
+            secondary_values = secondary_values[-expected_secondary_len:]
         
         sample = {
-            'primary_context': primary_context[feature_cols].values,
-            'secondary_context': secondary_context[feature_cols].values,
-            'target': target[config.OHLCV_FEATURES].values,
+            'primary_context': primary_values,
+            'secondary_context': secondary_values,
+            'target': target_values,
             'gap_length': gap_length,
             'symbol_id': self.symbol_encoder.get(symbol, 0),
             'gap_position': np.arange(gap_length) / gap_length  # Normalized position
@@ -145,6 +169,17 @@ class DatasetBuilder:
         labels = []
         metadata = []
         
+        # Calculate fixed feature size
+        num_ohlcv_features = len(config.OHLCV_FEATURES)
+        num_derived_features = len(config.DERIVED_FEATURES)
+        num_temporal_features = len(config.TEMPORAL_FEATURES)
+        
+        primary_context_size = config.LOOKBACK_WINDOW * (num_ohlcv_features + num_derived_features + num_temporal_features)
+        secondary_context_size = (config.LOOKBACK_WINDOW + config.MAX_GAP_LENGTH) * (num_ohlcv_features + num_derived_features + num_temporal_features)
+        meta_features_size = 2
+        
+        fixed_input_size = primary_context_size + secondary_context_size + meta_features_size
+        
         for gap_start, gap_length in gaps:
             try:
                 sample = self.create_sample(
@@ -155,9 +190,21 @@ class DatasetBuilder:
                     symbol
                 )
                 
-                # Flatten and concatenate inputs
-                primary_flat = sample['primary_context'].flatten()
-                secondary_flat = sample['secondary_context'].flatten()
+                # Pad primary context to fixed size
+                primary_padded = self._pad_to_size(
+                    sample['primary_context'],
+                    (config.LOOKBACK_WINDOW, num_ohlcv_features + num_derived_features + num_temporal_features)
+                )
+                
+                # Pad secondary context to fixed size
+                secondary_padded = self._pad_to_size(
+                    sample['secondary_context'],
+                    (config.LOOKBACK_WINDOW + config.MAX_GAP_LENGTH, num_ohlcv_features + num_derived_features + num_temporal_features)
+                )
+                
+                # Flatten contexts
+                primary_flat = primary_padded.flatten()
+                secondary_flat = secondary_padded.flatten()
                 
                 # Add metadata features
                 meta_features = np.array([
@@ -165,8 +212,14 @@ class DatasetBuilder:
                     sample['symbol_id']
                 ])
                 
-                # Combine all features
+                # Combine all features with fixed size
                 X = np.concatenate([primary_flat, secondary_flat, meta_features])
+                
+                # Ensure X has correct size
+                if len(X) != fixed_input_size:
+                    logger.warning(f"Input size mismatch: {len(X)} != {fixed_input_size}")
+                    continue
+                
                 y = sample['target']
                 
                 samples.append(X)
@@ -174,7 +227,8 @@ class DatasetBuilder:
                 metadata.append({
                     'gap_start': gap_start,
                     'gap_length': gap_length,
-                    'symbol': symbol
+                    'symbol': symbol,
+                    'symbol_id': sample['symbol_id']
                 })
                 
             except Exception as e:
@@ -185,12 +239,12 @@ class DatasetBuilder:
             logger.warning(f"No samples created for {symbol}")
             return np.array([]), np.array([]), []
         
-        # Pad sequences to max gap length
-        X_padded = self._pad_sequences(samples)
+        # Stack samples (should all have same size now)
+        X_array = np.array(samples)
         y_padded = self._pad_labels(labels)
         
-        logger.info(f"Built {len(samples)} samples for {symbol}")
-        return X_padded, y_padded, metadata
+        logger.info(f"Built {len(samples)} samples for {symbol} with input shape {X_array.shape}")
+        return X_array, y_padded, metadata
     
     def _pad_sequences(self, sequences: List[np.ndarray]) -> np.ndarray:
         """Pad sequences to same length."""
@@ -199,6 +253,38 @@ class DatasetBuilder:
         
         for i, seq in enumerate(sequences):
             padded[i, :len(seq)] = seq
+        
+        return padded
+    
+    def _pad_to_size(self, array: np.ndarray, target_shape: tuple) -> np.ndarray:
+        """
+        Pad or truncate array to target shape.
+        
+        Args:
+            array: Input array
+            target_shape: Desired shape (timesteps, features)
+            
+        Returns:
+            Padded/truncated array
+        """
+        current_shape = array.shape
+        
+        # Handle 1D arrays
+        if len(current_shape) == 1:
+            if len(array) >= target_shape[0] * target_shape[1]:
+                return array[:target_shape[0] * target_shape[1]].reshape(target_shape)
+            else:
+                padded = np.zeros(target_shape[0] * target_shape[1])
+                padded[:len(array)] = array
+                return padded.reshape(target_shape)
+        
+        # Handle 2D arrays
+        padded = np.zeros(target_shape)
+        
+        rows_to_copy = min(current_shape[0], target_shape[0])
+        cols_to_copy = min(current_shape[1], target_shape[1])
+        
+        padded[:rows_to_copy, :cols_to_copy] = array[:rows_to_copy, :cols_to_copy]
         
         return padded
     
@@ -269,10 +355,22 @@ class DatasetBuilder:
         all_y = []
         all_metadata = []
         
+        # First pass: determine the expected input size
+        expected_input_size = None
+        
         for symbol, (df_primary, df_secondary) in data_dict.items():
             X, y, metadata = self.build_dataset(df_primary, df_secondary, symbol)
             
             if len(X) > 0:
+                if expected_input_size is None:
+                    expected_input_size = X.shape[1]
+                    logger.info(f"Expected input size set to: {expected_input_size}")
+                
+                # Verify all samples have the same input size
+                if X.shape[1] != expected_input_size:
+                    logger.warning(f"Skipping {symbol}: input size mismatch {X.shape[1]} != {expected_input_size}")
+                    continue
+                
                 all_X.append(X)
                 all_y.append(y)
                 all_metadata.extend(metadata)
@@ -284,6 +382,8 @@ class DatasetBuilder:
         # Concatenate all symbols
         X_combined = np.vstack(all_X)
         y_combined = np.vstack(all_y)
+        
+        logger.info(f"Combined dataset shape: X={X_combined.shape}, y={y_combined.shape}")
         
         # Temporal split
         splits = self.temporal_split(X_combined, y_combined, all_metadata)

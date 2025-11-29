@@ -269,13 +269,16 @@ class ModelTrainer:
     def load_model(self, filepath: str = None):
         """Load trained model."""
         from tensorflow import keras
+        from model import AttentionLayer, ohlc_constraint_loss, mae_metric, mape_metric
+        
         filepath = filepath or config.MODEL_PATH
         self.model = keras.models.load_model(
             filepath,
             custom_objects={
-                'ohlc_constraint_loss': lambda y_true, y_pred: 0,
-                'mae_metric': lambda y_true, y_pred: 0,
-                'mape_metric': lambda y_true, y_pred: 0
+                'AttentionLayer': AttentionLayer,
+                'ohlc_constraint_loss': ohlc_constraint_loss,
+                'mae_metric': mae_metric,
+                'mape_metric': mape_metric
             }
         )
         logger.info(f"Model loaded from {filepath}")

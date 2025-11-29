@@ -21,9 +21,9 @@ for directory in [DATA_DIR, RAW_DATA_DIR, COMPLETED_DATA_DIR, MODEL_DIR, LOG_DIR
 # Cryptocurrency symbols
 SYMBOLS = [
     'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT',
-    'DOGE/USDT', 'SOL/USDT', 'DOT/USDT', 'MATIC/USDT', 'LTC/USDT',
-    'AVAX/USDT', 'LINK/USDT', 'UNI/USDT', 'ATOM/USDT', 'XLM/USDT',
-    'ALGO/USDT', 'VET/USDT', 'FIL/USDT', 'TRX/USDT', 'ETC/USDT'
+    'DOGE/USDT', 'SOL/USDT', 'DOT/USDT', 'LTC/USDT',
+    'AVAX/USDT', 'LINK/USDT', 'ATOM/USDT',
+    'ALGO/USDT', 
 ]
 
 # Data collection parameters

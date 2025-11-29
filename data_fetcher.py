@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 import time
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 import config
@@ -153,9 +154,54 @@ class DataFetcher:
         logger.info(f"Aligned to {len(common_times)} common timestamps")
         return df_primary_aligned, df_secondary_aligned
     
-    def fetch_all_symbols(self) -> Dict[str, Dict[str, pd.DataFrame]]:
+    def load_existing_data(self, symbol: str) -> Dict[str, pd.DataFrame]:
+        """
+        Load existing data from CSV files if available.
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            Dictionary with 'primary' and 'secondary' DataFrames, or None if not found
+        """
+        safe_symbol = symbol.replace('/', '_')
+        primary_path = f"{config.RAW_DATA_DIR}/{safe_symbol}_{config.PRIMARY_EXCHANGE}.csv"
+        secondary_path = f"{config.RAW_DATA_DIR}/{safe_symbol}_{config.SECONDARY_EXCHANGE}.csv"
+        
+        if os.path.exists(primary_path) and os.path.exists(secondary_path):
+            logger.info(f"Loading existing data for {symbol} from CSV files")
+            
+            try:
+                df_primary = pd.read_csv(primary_path)
+                df_secondary = pd.read_csv(secondary_path)
+                
+                # Convert timestamp columns
+                df_primary['open_time'] = pd.to_datetime(df_primary['open_time'])
+                if 'close_time' in df_primary.columns:
+                    df_primary['close_time'] = pd.to_datetime(df_primary['close_time'])
+                
+                df_secondary['open_time'] = pd.to_datetime(df_secondary['open_time'])
+                if 'close_time' in df_secondary.columns:
+                    df_secondary['close_time'] = pd.to_datetime(df_secondary['close_time'])
+                
+                logger.info(f"Loaded {len(df_primary)} primary and {len(df_secondary)} secondary records for {symbol}")
+                
+                return {
+                    'primary': df_primary,
+                    'secondary': df_secondary
+                }
+            except Exception as e:
+                logger.warning(f"Error loading existing data for {symbol}: {e}")
+                return None
+        
+        return None
+    
+    def fetch_all_symbols(self, force_download: bool = False) -> Dict[str, Dict[str, pd.DataFrame]]:
         """
         Fetch data for all configured symbols from both exchanges.
+        
+        Args:
+            force_download: If True, download even if data exists locally
         
         Returns:
             Dictionary with structure: {symbol: {'primary': df, 'secondary': df, 'gaps': list}}
@@ -166,6 +212,23 @@ class DataFetcher:
             logger.info(f"Processing {symbol}")
             
             try:
+                # Try to load existing data first
+                if not force_download:
+                    existing_data = self.load_existing_data(symbol)
+                    if existing_data:
+                        df_primary = existing_data['primary']
+                        df_secondary = existing_data['secondary']
+                        gaps = self.detect_gaps(df_primary)
+                        
+                        all_data[symbol] = {
+                            'primary': df_primary,
+                            'secondary': df_secondary,
+                            'gaps': gaps
+                        }
+                        continue
+                
+                # Download data if not found locally or force_download is True
+                logger.info(f"Downloading data for {symbol}")
                 df_primary = self.fetch_ohlcv(
                     self.primary_exchange,
                     symbol,

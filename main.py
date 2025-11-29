@@ -42,13 +42,15 @@ class CryptoCompletionPipeline:
         
         logger.info("Pipeline initialized")
     
-    def run_training_mode(self, symbols: list = None, epochs: int = None):
+    def run_training_mode(self, symbols: list = None, epochs: int = None, 
+                          force_download: bool = False):
         """
         Run complete training pipeline.
         
         Args:
             symbols: List of symbols to train on (None = use all)
             epochs: Number of training epochs
+            force_download: Force re-download of data even if exists locally
         """
         logger.info("=" * 80)
         logger.info("STARTING TRAINING MODE")
@@ -59,8 +61,16 @@ class CryptoCompletionPipeline:
         
         # Step 1: Fetch data
         logger.info("Step 1/6: Fetching data from exchanges")
-        all_data = self.fetcher.fetch_all_symbols()
-        self.fetcher.save_raw_data(all_data)
+        if force_download:
+            logger.info("Force download enabled - will re-download all data")
+        else:
+            logger.info("Checking for existing data files first")
+        
+        all_data = self.fetcher.fetch_all_symbols(force_download=force_download)
+        
+        # Save raw data (only if newly downloaded or force_download)
+        if force_download:
+            self.fetcher.save_raw_data(all_data)
         
         # Step 2: Feature engineering
         logger.info("Step 2/6: Engineering features")
@@ -157,7 +167,17 @@ class CryptoCompletionPipeline:
         # Load model
         logger.info(f"Loading model from {model_path}")
         try:
-            model = keras.models.load_model(model_path, compile=False)
+            from model import AttentionLayer, ohlc_constraint_loss, mae_metric, mape_metric
+            
+            model = keras.models.load_model(
+                model_path,
+                custom_objects={
+                    'AttentionLayer': AttentionLayer,
+                    'ohlc_constraint_loss': ohlc_constraint_loss,
+                    'mae_metric': mae_metric,
+                    'mape_metric': mape_metric
+                }
+            )
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
             return
@@ -324,6 +344,12 @@ def main():
         help='Path to model file'
     )
     
+    parser.add_argument(
+        '--force-download',
+        action='store_true',
+        help='Force re-download of data even if exists locally'
+    )
+    
     args = parser.parse_args()
     
     # Parse symbols
@@ -336,7 +362,11 @@ def main():
     
     # Run appropriate mode
     if args.mode == 'train':
-        pipeline.run_training_mode(symbols=symbols, epochs=args.epochs)
+        pipeline.run_training_mode(
+            symbols=symbols, 
+            epochs=args.epochs,
+            force_download=args.force_download
+        )
     elif args.mode == 'complete':
         pipeline.run_completion_mode(
             input_dir=args.input,

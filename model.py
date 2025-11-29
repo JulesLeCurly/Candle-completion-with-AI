@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 class AttentionLayer(layers.Layer):
     """Custom attention mechanism layer."""
     
-    def __init__(self, units):
-        super(AttentionLayer, self).__init__()
+    def __init__(self, units, **kwargs):
+        super(AttentionLayer, self).__init__(**kwargs)
         self.units = units
         self.W = layers.Dense(units)
         self.V = layers.Dense(1)
@@ -42,6 +42,19 @@ class AttentionLayer(layers.Layer):
         context_vector = tf.reduce_sum(context_vector, axis=1)
         
         return context_vector
+    
+    def get_config(self):
+        """Return layer configuration for serialization."""
+        config = super(AttentionLayer, self).get_config()
+        config.update({
+            "units": self.units
+        })
+        return config
+    
+    @classmethod
+    def from_config(cls, config):
+        """Create layer from configuration."""
+        return cls(**config)
 
 
 def create_model(input_shape: tuple, output_shape: tuple, 
